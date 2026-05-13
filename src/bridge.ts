@@ -126,7 +126,12 @@ export class Bridge {
       }
       await this.continueSession(msg, session);
     } else {
-      await this.startSession(msg);
+      // Main chat: only commands, no Claude. Threads are for conversations.
+      await this.sendCard(chatId, buildTextCard(
+        'Fleet',
+        '在主聊天中用命令管理会话：\n\n`/dash` — 仪表盘\n`/projects` — 浏览项目\n`/list` — 查看会话\n`/folder <name>` — 切换项目\n\n点 **➕ New** 按钮或在 thread 里发消息开始 Claude 对话。',
+        'blue',
+      ));
     }
   }
 
