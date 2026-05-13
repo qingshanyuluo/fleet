@@ -91,7 +91,7 @@ export function buildCard(state: CardState): string {
   return JSON.stringify({
     config: { update_multi: true, wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: `${iconForStatus(state.status)} ${state.status === 'waiting_for_input' ? 'Waiting' : state.status === 'thinking' ? 'Thinking' : state.status === 'running' ? 'Running' : state.status === 'complete' ? 'Done' : 'Error'}` },
+      title: { tag: 'plain_text', content: state.status === 'thinking' ? state.userPrompt.slice(0, 50) : `${iconForStatus(state.status)} ${state.status === 'waiting_for_input' ? 'Waiting' : state.status === 'running' ? 'Running' : state.status === 'complete' ? 'Done' : 'Error'}` },
       template: colorForStatus(state.status),
     },
     elements,
@@ -288,12 +288,13 @@ export function buildDashCard(
 }
 
 export function buildForkCard(parentTitle: string, workingDir: string, folder: string): string {
+  const shortTitle = parentTitle.slice(0, 30);
   return JSON.stringify({
     config: { update_multi: true, wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: '⑂ Forked Session' }, template: 'blue' },
+    header: { title: { tag: 'plain_text', content: shortTitle }, template: 'blue' },
     elements: [{
       tag: 'div',
-      text: { tag: 'lark_md', content: `**Forked from:** ${parentTitle}\n**Working directory:** \`${workingDir}\`\n**Folder:** \`${folder}\`\n\nReply to continue.` },
+      text: { tag: 'lark_md', content: `Forked from: ${parentTitle}\n📁 \`${folder}\` → \`${workingDir}\`\n\nReply to continue.` },
     }],
   });
 }

@@ -182,7 +182,7 @@ export class Bridge {
           this.logger.warn({ err }, 'Fork failed, using fresh');
         }
         const session = this.createSession({ folder: folderName, workingDir: wd, title: `Fork: ${title.slice(0, 60)}`, claudeSessionId: newClaudeId || undefined });
-        const card = buildTextCard('⑂ Forked', `**${title.slice(0, 100)}**\n📁 \`${folderName}\` → \`${wd}\`\n\n回复此卡片继续`, 'blue');
+        const card = buildTextCard(title.slice(0, 30), `📁 \`${folderName}\` → \`${wd}\`\n\nForked — 回复此卡片继续`, 'blue');
         const rootId = await this.sender.sendCard(chatId, card);
         if (rootId) { session.rootMessageId = rootId; this.saveSession(session); }
         break;
@@ -242,7 +242,7 @@ export class Bridge {
   private async startNewThread(chatId: string): Promise<void> {
     const state = this.getChatState(chatId);
     const session = this.createSession({ folder: state.currentFolder, workingDir: state.currentWorkingDirectory, title: '(new session)' });
-    const card = buildTextCard('➕ New Session', `📁 **${state.currentFolder}**\n\`${state.currentWorkingDirectory}\`\n\n回复此卡片开始新对话`, 'blue');
+    const card = buildTextCard('New Session', `📁 **${state.currentFolder}**\n\`${state.currentWorkingDirectory}\`\n\n回复此卡片开始新对话`, 'blue');
     const rootId = await this.sender.sendCard(chatId, card);
     if (rootId) {
       session.rootMessageId = rootId;
@@ -253,7 +253,8 @@ export class Bridge {
   private async resumeClaudeSession(chatId: string, claudeSessionId: string, title: string, workingDir: string): Promise<void> {
     const folderName = workingDir.split('/').pop() || workingDir;
     const session = this.createSession({ folder: folderName, workingDir, title: `Resumed: ${title.slice(0, 80)}`, claudeSessionId });
-    const card = buildTextCard('▶ Resumed Session', `**${title.slice(0, 100)}**\n\n📁 \`${folderName}\` → \`${workingDir}\`\n\n回复此卡片继续对话`, 'green');
+    const shortTitle = title.slice(0, 30);
+    const card = buildTextCard(shortTitle, `📁 \`${folderName}\` → \`${workingDir}\`\n\n回复此卡片继续对话`, 'green');
     const rootId = await this.sender.sendCard(chatId, card);
     if (rootId) {
       session.rootMessageId = rootId;
