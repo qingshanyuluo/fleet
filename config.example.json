@@ -1,0 +1,19 @@
+{
+  "feishuAppId": "",
+  "feishuAppSecret": "",
+  "defaultWorkingDirectory": "/Users/ll/metabot-workspace",
+  "claude": {
+    "maxTurns": null,
+    "maxBudgetUsd": null,
+    "model": "claude-opus-4-7"
+  },
+  "folders": {
+    "metabot": "/Users/ll/metabot",
+    "workspace": "/Users/ll/metabot-workspace",
+    "fleet": "/Users/ll/WebProjects/fleet",
+    "web": "/Users/ll/WebProjects"
+  },
+  "log": {
+    "level": "info"
+  }
+}
