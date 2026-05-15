@@ -6,15 +6,26 @@ A Feishu bot that turns your phone into a Claude Code remote client. Threads are
 
 ```
 Feishu DM (your phone/PC)
-  ├── "/dash"       → 🏠 Dashboard (buttons for everything)
-  ├── "/projects"   → 📂 Browse Claude projects, tap to switch
-  ├── "/list"       → 📋 All sessions: Resume old, Fork running ones
-  ├── Send message  → New Claude session (reply to card to continue)
+  ├── "/dash"         → 🏠 Dashboard with quick-action buttons
+  ├── "/projects"     → 📂 Browse Claude projects, tap to switch
+  ├── "/list"         → 📋 Collapsible session list with previews
+  ├── "/list <query>" → 🔍 Search all sessions by keyword
+  ├── Send message    → New Claude session (reply to card to continue)
   ├── Reply in thread → Continue that session
   └── Multiple threads → Multiple concurrent Claude sessions
 ```
 
-**No database. Zero persistence.** Fleet uses Claude Code's native storage (`~/.claude/projects/`, `~/.claude/sessions/`). All fleet state is in-memory — restart and it rebuilds automatically.
+## Features
+
+- **Collapsible session list** — Feishu Card JSON 2.0 native `collapsible_panel`, click to expand previews and action buttons
+- **Session search** — `/list <keyword>` searches across all Claude sessions (summary, title, first prompt)
+- **Watch running sessions** — See real-time output of sessions running in VSCode/terminal
+- **Fork & Resume** — Native Claude fork (shared history) or resume existing sessions
+- **AskUserQuestion** — Interactive question cards with option buttons
+- **File & Image support** — Send images/files from Feishu, Claude analyzes them
+- **Auto-retry** — Stale session and context overflow auto-retry with fresh session
+- **Persistent state** — Thread↔session mappings survive restarts (`~/.fleet/state.json`)
+- **PM2 managed** — Auto-restart on crash, graceful shutdown, log rotation
 
 ## Setup
 
@@ -28,14 +39,14 @@ Feishu DM (your phone/PC)
 
 1. Go to [Feishu Developer Console](https://open.feishu.cn/app) → Create Custom App
 2. Add **Bot** capability
-3. Go to **Permissions & Scopes** → add these permissions:
+3. Go to **Permissions & Scopes** → add:
    - `im:message` — Read and send messages
    - `im:message:readonly` — Read messages
    - `im:resource` — Upload images and files
 4. Go to **Events & Subscriptions**:
    - Set mode to **"Persistent connection"** (WebSocket)
-   - Subscribe to events: `im.message.receive_v1`, `card.action.trigger`
-5. **Create a version and publish it**
+   - Subscribe to: `im.message.receive_v1`, `card.action.trigger`
+5. Create a version and publish
 
 ### 3. Install & Configure
 
@@ -50,7 +61,12 @@ cp config.example.json config.json
 ### 4. Run
 
 ```bash
+# Development
 npm run dev
+
+# Production (PM2)
+pm2 start ecosystem.config.cjs
+pm2 save
 ```
 
 ### 5. Connect
@@ -59,59 +75,63 @@ Open Feishu, search for your bot, start a DM.
 
 ## Usage
 
-### Main Chat (Dashboard)
+### Commands
 
 | Command | What it does |
 |---------|-------------|
-| `/<br/>/dash` | Dashboard with quick-action buttons |
+| `/dash` | Dashboard with quick-action buttons |
 | `/projects` | Browse all Claude project folders, tap to switch |
-| `/list` | Show sessions in current folder |
+| `/list` | Collapsible session list (5/page, with previews) |
+| `/list <keyword>` | Search all sessions by keyword |
 | `/folder <name>` | Switch to a named project |
-| `/cd <path>` | Set working directory directly |
+| `/cd <path>` | Set working directory |
+| `/stop` | Stop running task (use in thread) |
+| `/reset` | Fresh conversation (use in thread) |
 | `/help` | Show help |
 
-### Conversations (Threads)
+### Conversations
 
 - **Start new**: Send any message → bot replies with a streaming card
-- **Continue**: Reply to the card (in thread) → bot continues the session
+- **Continue**: Reply in the thread → bot continues the session
 - **Multiple**: Start multiple threads — each is an independent Claude session
 
-### Session Management
+### Session List (`/list`)
 
-In `/list`, each session has:
+Each session is a collapsible panel. Click to expand and see:
+- Last 4 messages preview (user prompts + Claude responses)
+- Action buttons: Resume, Fork, Watch, Archive
 
 | Button | What it does |
 |--------|-------------|
-| ▶ Resume | Create a new thread resuming that Claude session's history |
-| ⑂ Fork | Create a native Claude fork (new session, shared history up to fork point) |
+| ▶ Resume | Continue that Claude session in a new thread |
+| ⑂ Fork | Native Claude fork (new session, shared history) |
+| 👀 Watch | View recent output of a running session |
 | ✕ Archive | Remove from list |
-| 🟢 Running | Session is active in VSCode/terminal — Fork instead |
 
-### Detecting Active Sessions
+Pagination: 5 sessions per page with Prev/Next buttons.
 
-Fleet checks `~/.claude/sessions/` for running Claude processes. If a session is being used by VSCode or terminal, it shows 🟢 and offers Fork instead of Resume — no accidental conflicts.
+### Active Session Detection
+
+Fleet checks `~/.claude/sessions/` for running Claude processes. Running sessions show 🟢 and offer Watch + Fork instead of Resume.
 
 ## Architecture
 
 ```
-~2200 lines of TypeScript. 11 source files. Zero database.
+~2500 lines of TypeScript. 14 source files.
+Persistent state: ~/.fleet/state.json
 ```
 
-| File | Responsibility |
-|------|---------------|
-| `src/index.ts` | Entry point: WebSocket client, graceful shutdown |
-| `src/bridge.ts` | Core orchestrator: message routing, session lifecycle, Claude execution |
-| `src/event-handler.ts` | Feishu WS event dispatcher |
-| `src/executor.ts` | Claude Code Agent SDK wrapper |
-| `src/stream.ts` | SDK messages → CardState transformer |
-| `src/card.ts` | Feishu interactive card builder |
-| `src/sender.ts` | Feishu HTTP API client |
-| `src/projects.ts` | Claude project scanner, session reader, active session detection |
+| Directory | Responsibility |
+|-----------|---------------|
+| `src/bridge/` | Core orchestrator, command handler, session manager |
+| `src/core/` | Claude SDK executor, stream processor, project scanner |
+| `src/feishu/` | Card builder, event handler, Feishu API sender |
+| `src/index.ts` | Entry point: WebSocket client, health check, graceful shutdown |
 | `src/config.ts` | Configuration loader |
 | `src/types.ts` | Shared type definitions |
 | `src/logger.ts` | Pino logger |
 
-## Config reference
+## Config Reference
 
 ```json
 {
@@ -128,6 +148,22 @@ Fleet checks `~/.claude/sessions/` for running Claude processes. If a session is
     "fleet": "/Users/you/Code/fleet"
   }
 }
+```
+
+## Deployment
+
+### PM2 (Recommended)
+
+```bash
+pm2 start ecosystem.config.cjs
+pm2 save
+pm2 startup  # auto-start on boot
+```
+
+### Docker
+
+```bash
+docker compose up -d
 ```
 
 ## License
