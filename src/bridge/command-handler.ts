@@ -3,7 +3,7 @@ import type { AppConfig } from '../config.js';
 import type { IncomingMessage, ThreadSession } from '../types.js';
 import { Sender } from '../feishu/sender.js';
 import { buildTextCard, buildDashCard, buildProjectListCard, buildSessionListCard } from '../feishu/card-builder.js';
-import { scanProjects, readProjectSessions, getActiveClaudeSessions } from '../core/projects.js';
+import { scanProjects, readProjectSessions, getActiveClaudeSessions, tailSession } from '../core/projects.js';
 import type { SessionManager } from './session-manager.js';
 
 /**
@@ -17,6 +17,10 @@ export class CommandHandler {
     private sender: Sender,
     private sessions: SessionManager,
   ) {}
+
+  async showSessionsPage(chatId: string, page: number): Promise<void> {
+    await this.showSessions(chatId, page);
+  }
 
   async handleMessage(msg: IncomingMessage): Promise<boolean> {
     const { text, chatId } = msg;
@@ -37,7 +41,11 @@ export class CommandHandler {
         await this.showProjects(chatId);
         return true;
       case '/list':
-        await this.showSessions(chatId);
+        if (arg) {
+          await this.searchSessions(chatId, arg);
+        } else {
+          await this.showSessions(chatId);
+        }
         return true;
       case '/folder':
         await this.switchFolder(chatId, arg);
@@ -112,7 +120,7 @@ export class CommandHandler {
     await this.sender.sendCard(chatId, buildProjectListCard(projects, state.currentWorkingDirectory));
   }
 
-  private async showSessions(chatId: string): Promise<void> {
+  private async showSessions(chatId: string, page: number = 0): Promise<void> {
     const state = this.sessions.getChatState(chatId);
     const active = getActiveClaudeSessions();
 
@@ -137,9 +145,28 @@ export class CommandHandler {
       (cs) => !linkedIds.has(cs.sessionId),
     );
 
+    // Build previews only for the visible page (5 items)
+    const PAGE_SIZE = 5;
+    const allIds = [
+      ...fleetSessions.map((s) => s.claudeSessionId).filter(Boolean) as string[],
+      ...claudeSessions.map((cs) => cs.sessionId),
+    ];
+    const pageIds = allIds.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+    const sessionPreviews = new Map<string, string>();
+    for (const sid of pageIds) {
+      const msgs = tailSession(state.currentWorkingDirectory, sid, 4);
+      if (msgs.length > 0) {
+        const lines = msgs.map((m) => {
+          const icon = m.role === 'user' ? '💬' : m.role === 'assistant' ? '🤖' : '📊';
+          return `${icon} ${m.summary.slice(0, 120)}`;
+        });
+        sessionPreviews.set(sid, lines.join('\n'));
+      }
+    }
+
     await this.sender.sendCard(
       chatId,
-      buildSessionListCard(fleetSessions, state.currentFolder, claudeSessions, state.currentWorkingDirectory, active),
+      buildSessionListCard(fleetSessions, state.currentFolder, claudeSessions, state.currentWorkingDirectory, active, sessionPreviews, page),
     );
   }
 
@@ -204,5 +231,56 @@ export class CommandHandler {
     session.claudeSessionId = null;
     this.sessions.save(session);
     await this.sender.sendCard(chatId, buildTextCard('Reset', 'Fresh conversation next message.', 'green'));
+  }
+
+  private async searchSessions(chatId: string, query: string): Promise<void> {
+    const { listSessions } = await import('@anthropic-ai/claude-agent-sdk');
+    const state = this.sessions.getChatState(chatId);
+    const active = getActiveClaudeSessions();
+
+    let allSessions: Array<{ sessionId: string; summary?: string; customTitle?: string; firstPrompt?: string; lastModified: number; cwd?: string }>;
+    try {
+      allSessions = await listSessions() as typeof allSessions;
+    } catch (err) {
+      this.logger.error({ err }, 'listSessions failed');
+      await this.sender.sendCard(chatId, buildTextCard('Error', 'Failed to list sessions.', 'red'));
+      return;
+    }
+
+    const q = query.toLowerCase();
+    const matched = allSessions.filter((s) => {
+      const text = `${s.summary || ''} ${s.customTitle || ''} ${s.firstPrompt || ''}`.toLowerCase();
+      return text.includes(q);
+    }).slice(0, 20);
+
+    if (matched.length === 0) {
+      await this.sender.sendCard(chatId, buildTextCard('Search', `No sessions matching \`${query}\`.`, 'yellow'));
+      return;
+    }
+
+    const claudeSessions = matched.map((s) => ({
+      title: s.customTitle || s.summary || s.firstPrompt || '(untitled)',
+      time: s.lastModified,
+      sessionId: s.sessionId,
+    }));
+
+    // Build previews for first page
+    const sessionPreviews = new Map<string, string>();
+    for (const cs of claudeSessions.slice(0, 5)) {
+      const wd = (allSessions.find((s) => s.sessionId === cs.sessionId)?.cwd) || state.currentWorkingDirectory;
+      const msgs = tailSession(wd, cs.sessionId, 4);
+      if (msgs.length > 0) {
+        const lines = msgs.map((m) => {
+          const icon = m.role === 'user' ? '💬' : m.role === 'assistant' ? '🤖' : '📊';
+          return `${icon} ${m.summary.slice(0, 120)}`;
+        });
+        sessionPreviews.set(cs.sessionId, lines.join('\n'));
+      }
+    }
+
+    await this.sender.sendCard(
+      chatId,
+      buildSessionListCard([], `search: ${query}`, claudeSessions, state.currentWorkingDirectory, active, sessionPreviews),
+    );
   }
 }

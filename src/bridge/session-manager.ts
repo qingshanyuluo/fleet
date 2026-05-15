@@ -1,17 +1,31 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from '../config.js';
 import type { ThreadSession, ChatState, PendingQuestion } from '../types.js';
 
+const STATE_DIR = path.join(os.homedir(), '.fleet');
+const STATE_FILE = path.join(STATE_DIR, 'state.json');
+
+interface PersistedState {
+  sessions: ThreadSession[];
+  chatStates: Record<string, ChatState>;
+}
+
 /**
- * Session manager — in-memory CRUD for threads, chat state, running tasks, and message queues.
- * Extracted from bridge.ts to keep the orchestrator focused on execution flow.
+ * Session manager — persisted CRUD for threads, chat state.
+ * Thread↔session mappings survive restarts via ~/.fleet/state.json.
  */
 export class SessionManager {
-  private sessionsByRoot = new Map<string, ThreadSession>(); // rootMessageId → session
-  private sessionsById = new Map<string, ThreadSession>(); // id → session
-  private chatStates = new Map<string, ChatState>(); // chatId → current folder/wd
+  private sessionsByRoot = new Map<string, ThreadSession>();
+  private sessionsById = new Map<string, ThreadSession>();
+  private chatStates = new Map<string, ChatState>();
+  private persistTimer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(private config: AppConfig) {}
+  constructor(private config: AppConfig) {
+    this.loadFromDisk();
+  }
 
   create(opts: {
     folder: string;
@@ -21,7 +35,7 @@ export class SessionManager {
   }): ThreadSession {
     const session: ThreadSession = {
       id: randomUUID(),
-      rootMessageId: '', // set after card is sent
+      rootMessageId: '',
       claudeSessionId: opts.claudeSessionId || null,
       workingDirectory: opts.workingDir,
       folder: opts.folder,
@@ -36,6 +50,7 @@ export class SessionManager {
       this.sessionsByRoot.set(session.rootMessageId, session);
     }
     this.sessionsById.set(session.id, session);
+    this.schedulePersist();
   }
 
   getByRoot(rootId: string): ThreadSession | undefined {
@@ -51,13 +66,12 @@ export class SessionManager {
       this.sessionsByRoot.delete(session.rootMessageId);
     }
     this.sessionsById.delete(session.id);
+    this.schedulePersist();
   }
 
   allSessions(): IterableIterator<ThreadSession> {
     return this.sessionsById.values();
   }
-
-  // Chat state management
 
   getChatState(chatId: string): ChatState {
     let state = this.chatStates.get(chatId);
@@ -73,8 +87,50 @@ export class SessionManager {
 
   setChatState(chatId: string, state: ChatState): void {
     this.chatStates.set(chatId, state);
+    this.schedulePersist();
+  }
+
+  // ── Persistence ──
+
+  private schedulePersist(): void {
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      this.saveToDisk();
+    }, 1000);
+  }
+
+  private saveToDisk(): void {
+    try {
+      fs.mkdirSync(STATE_DIR, { recursive: true });
+      const state: PersistedState = {
+        sessions: [...this.sessionsById.values()],
+        chatStates: Object.fromEntries(this.chatStates),
+      };
+      fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  private loadFromDisk(): void {
+    try {
+      if (!fs.existsSync(STATE_FILE)) return;
+      const raw = fs.readFileSync(STATE_FILE, 'utf-8');
+      const state = JSON.parse(raw) as PersistedState;
+      for (const s of state.sessions || []) {
+        this.sessionsById.set(s.id, s);
+        if (s.rootMessageId) {
+          this.sessionsByRoot.set(s.rootMessageId, s);
+        }
+      }
+      for (const [chatId, cs] of Object.entries(state.chatStates || {})) {
+        this.chatStates.set(chatId, cs);
+      }
+    } catch {
+      /* ignore corrupt state */
+    }
   }
 }
 
-// Re-export types used by bridge consumers
 export type { ThreadSession, ChatState, PendingQuestion };

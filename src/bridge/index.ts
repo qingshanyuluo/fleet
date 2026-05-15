@@ -103,6 +103,7 @@ export class Bridge {
 
   async handleCardAction(event: CardActionEvent): Promise<void> {
     const { chatId, userId, value } = event;
+    this.logger.info({ value }, 'Card action value');
     const action = value.action as string | undefined;
     if (!action) return;
 
@@ -141,6 +142,11 @@ export class Bridge {
           userId,
           text: '/list',
         });
+        break;
+      }
+      case 'list_page': {
+        const page = typeof value.page === 'number' ? value.page : 0;
+        await this.commands.showSessionsPage(chatId, page);
         break;
       }
       case 'watch_session': {

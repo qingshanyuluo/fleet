@@ -25,7 +25,8 @@ export class Sender {
       }
       return messageId;
     } catch (err) {
-      this.logger.error({ err, chatId }, 'sendCard failed');
+      const axErr = err as { response?: { data?: unknown } };
+      this.logger.error({ err, chatId, responseData: axErr.response?.data }, 'sendCard failed');
       return undefined;
     }
   }

@@ -16,6 +16,9 @@ interface CardComponent {
   header?: Record<string, unknown>;
   type?: string;
   value?: Record<string, unknown>;
+  overflow?: Record<string, unknown>;
+  options?: Record<string, unknown>[];
+  layout?: string;
 }
 
 function colorForStatus(status: string): string {
@@ -173,178 +176,91 @@ export function buildSessionListCard(
   claudeSessions?: Array<{ title: string; time: number; sessionId: string }>,
   workingDir?: string,
   activeSessions?: Set<string>,
+  sessionPreviews?: Map<string, string>,
+  page: number = 0,
 ): string {
-  const elements: CardComponent[] = [];
-  const total = sessions.length + (claudeSessions?.length || 0);
+  const PAGE_SIZE = 5;
+  const allClaude = claudeSessions || [];
+  const total = sessions.length + allClaude.length;
+  const elements: Record<string, unknown>[] = [];
 
-  elements.push({
-    tag: 'div',
-    text: {
-      tag: 'lark_md',
-      content: `📁 **Folder:** \`${folder}\`\n${total} session(s) — ${sessions.length} fleet, ${claudeSessions?.length || 0} Claude`,
-    },
-  });
-  elements.push({ tag: 'hr' });
-
+  // Merge fleet + claude into one list, fleet first
+  const merged: Array<{ type: 'fleet' | 'claude'; id: string; claudeId: string | null; title: string; time: number; isRunning: boolean }> = [];
   for (const s of sessions) {
-    const time = new Date(s.updatedAt).toLocaleString('zh-CN', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    const title = (s.title || '(untitled)').slice(0, 40);
-    const fleetActive = s.claudeSessionId && activeSessions?.has(s.claudeSessionId);
+    const fleetActive = !!(s.claudeSessionId && activeSessions?.has(s.claudeSessionId));
+    merged.push({ type: 'fleet', id: s.id, claudeId: s.claudeSessionId, title: s.title || '(untitled)', time: s.updatedAt, isRunning: fleetActive });
+  }
+  for (const cs of allClaude) {
+    const isRunning = activeSessions?.has(cs.sessionId) ?? false;
+    merged.push({ type: 'claude', id: cs.sessionId, claudeId: cs.sessionId, title: cs.title || '(no prompt)', time: cs.time, isRunning });
+  }
+
+  const totalPages = Math.max(1, Math.ceil(merged.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages - 1);
+  const pageItems = merged.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+
+  elements.push({ tag: 'markdown', content: `📁 **\`${folder}\`** · ${total} session(s) · page ${currentPage + 1}/${totalPages}` });
+
+  for (const item of pageItems) {
+    const timeStr = item.time > 0
+      ? new Date(item.time).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      : '';
+    const label = `${item.isRunning ? '🟢' : '●'} ${item.title.slice(0, 55)} · ${timeStr}`.trim();
+    const preview = (item.claudeId && sessionPreviews?.get(item.claudeId)) || '';
+
+    const panelElements: Record<string, unknown>[] = [];
+    if (preview) {
+      panelElements.push({ tag: 'markdown', content: preview });
+    }
+
+    if (item.type === 'fleet') {
+      panelElements.push({ tag: 'button', text: { tag: 'plain_text', content: '⑂ Fork' }, type: 'default', behaviors: [{ type: 'callback', value: { action: 'fork', sessionId: item.id } }] });
+      if (!item.isRunning) {
+        panelElements.push({ tag: 'button', text: { tag: 'plain_text', content: '✕ Archive' }, type: 'danger', behaviors: [{ type: 'callback', value: { action: 'archive', sessionId: item.id } }] });
+      }
+    } else {
+      if (item.isRunning) {
+        panelElements.push({ tag: 'button', text: { tag: 'plain_text', content: '👀 Watch' }, type: 'primary', behaviors: [{ type: 'callback', value: { action: 'watch_session', sessionId: item.id, title: item.title, workingDir: workingDir || '' } }] });
+        panelElements.push({ tag: 'button', text: { tag: 'plain_text', content: '🟢 Fork' }, type: 'default', behaviors: [{ type: 'callback', value: { action: 'fork_claude', sessionId: item.id, title: item.title, workingDir: workingDir || '' } }] });
+      } else {
+        panelElements.push({ tag: 'button', text: { tag: 'plain_text', content: '▶ Resume' }, type: 'primary', behaviors: [{ type: 'callback', value: { action: 'resume_claude', sessionId: item.id, title: item.title, workingDir: workingDir || '' } }] });
+      }
+    }
 
     elements.push({
-      tag: 'div',
-      text: {
-        tag: 'lark_md',
-        content: `${fleetActive ? '🟢' : '●'} **${title}**\n${time} · fleet${fleetActive ? ' (active elsewhere)' : ''}`,
+      tag: 'collapsible_panel',
+      expanded: false,
+      header: {
+        title: { tag: 'plain_text', content: label },
+        icon: { tag: 'standard_icon', token: 'down-small-ccm_outlined', size: '16px 16px' },
+        icon_position: 'right',
+        icon_expanded_angle: -180,
       },
+      border: { color: 'grey', corner_radius: '5px' },
+      elements: panelElements,
     });
-    elements.push({
-      tag: 'action',
-      actions: fleetActive
-        ? [
-            {
-              tag: 'button',
-              text: { tag: 'plain_text', content: '🟢 In use — Fork' },
-              type: 'default',
-              value: { action: 'fork', sessionId: s.id },
-            },
-          ]
-        : [
-            {
-              tag: 'button',
-              text: { tag: 'plain_text', content: '⑂ Fork' },
-              type: 'default',
-              value: { action: 'fork', sessionId: s.id },
-            },
-            {
-              tag: 'button',
-              text: { tag: 'plain_text', content: '✕ Archive' },
-              type: 'danger',
-              value: { action: 'archive', sessionId: s.id },
-            },
-          ],
-    });
-    elements.push({ tag: 'hr' });
   }
 
-  if (claudeSessions && claudeSessions.length > 0) {
-    elements.push({
-      tag: 'div',
-      text: { tag: 'lark_md', content: `**Claude History (${claudeSessions.length}):**` },
-    });
-    elements.push({ tag: 'hr' });
-
-    const withButtons = claudeSessions.slice(0, 20);
-    for (const cs of withButtons) {
-      const title = (cs.title || '(no prompt)').slice(0, 80);
-      const timeStr =
-        cs.time > 0
-          ? new Date(cs.time).toLocaleString('zh-CN', {
-              month: 'short',
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-            })
-          : '';
-      const isRunning = activeSessions?.has(cs.sessionId) ?? false;
-
-      elements.push({
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `${isRunning ? '🟢' : ''} **${title}**\n${timeStr} · \`${cs.sessionId.slice(0, 8)}...\``,
-        },
-      });
-      elements.push({
-        tag: 'action',
-        actions: isRunning
-          ? [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: '👀 Watch' },
-                type: 'primary',
-                value: {
-                  action: 'watch_session',
-                  sessionId: cs.sessionId,
-                  title,
-                  workingDir: workingDir || '',
-                },
-              },
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: '🟢 Fork' },
-                type: 'default',
-                value: {
-                  action: 'fork_claude',
-                  sessionId: cs.sessionId,
-                  title,
-                  workingDir: workingDir || '',
-                },
-              },
-            ]
-          : [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: '▶ Resume' },
-                type: 'primary',
-                value: {
-                  action: 'resume_claude',
-                  sessionId: cs.sessionId,
-                  title,
-                  workingDir: workingDir || '',
-                },
-              },
-            ],
-      });
-      elements.push({ tag: 'hr' });
-    }
-
-    const totalShown = withButtons.length;
-    if (claudeSessions.length > totalShown) {
-      elements.push({ tag: 'hr' });
-      elements.push({
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `_... and ${claudeSessions.length - totalShown} more sessions_`,
-        },
-      });
-    }
+  if (total === 0) {
+    elements.push({ tag: 'markdown', content: '_No sessions. Send a message to start one._' });
   }
 
-  if (sessions.length === 0 && (!claudeSessions || claudeSessions.length === 0)) {
-    elements.push({ tag: 'div', text: { tag: 'lark_md', content: '_No sessions. Send a message to start one._' } });
-  }
-
-  // Quick actions
+  // Pagination + quick actions
   elements.push({ tag: 'hr' });
-  elements.push({
-    tag: 'action',
-    actions: [
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: '➕ New Session' },
-        type: 'primary',
-        value: { action: 'new_session' },
-      },
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: '📂 Projects' },
-        type: 'default',
-        value: { action: 'cmd', cmd: 'projects' },
-      },
-    ],
-  });
+  if (currentPage > 0) {
+    elements.push({ tag: 'button', text: { tag: 'plain_text', content: '← Prev' }, type: 'default', behaviors: [{ type: 'callback', value: { action: 'list_page', page: currentPage - 1 } }] });
+  }
+  if (currentPage < totalPages - 1) {
+    elements.push({ tag: 'button', text: { tag: 'plain_text', content: 'Next →' }, type: 'default', behaviors: [{ type: 'callback', value: { action: 'list_page', page: currentPage + 1 } }] });
+  }
+  elements.push({ tag: 'button', text: { tag: 'plain_text', content: '➕ New Session' }, type: 'primary', behaviors: [{ type: 'callback', value: { action: 'new_session' } }] });
+  elements.push({ tag: 'button', text: { tag: 'plain_text', content: '📂 Projects' }, type: 'default', behaviors: [{ type: 'callback', value: { action: 'cmd', cmd: 'projects' } }] });
 
   return JSON.stringify({
-    config: { update_multi: false, wide_screen_mode: true },
+    schema: '2.0',
+    config: { update_multi: true },
     header: { title: { tag: 'plain_text', content: '📋 Sessions' }, template: 'blue' },
-    elements,
+    body: { elements },
   });
 }
 
@@ -558,7 +474,7 @@ export function buildWatchCard(
   });
 
   return JSON.stringify({
-    config: { update_multi: false, wide_screen_mode: true },
+    config: { update_multi: true, wide_screen_mode: true },
     header: { title: { tag: 'plain_text', content: `👀 ${title.slice(0, 40)}` }, template: 'green' },
     elements,
   });
