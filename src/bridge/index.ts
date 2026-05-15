@@ -14,6 +14,8 @@ import { tailSession } from '../core/projects.js';
 
 const TASK_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000;
+const STALL_API_TIMEOUT_MS = 30 * 1000; // 30s no stream output while waiting for API → dead
+const STALL_TOOL_TIMEOUT_MS = 3 * 60 * 1000; // 3min no output while tool executing → dead
 const QUESTION_TIMEOUT_MS = 5 * 60 * 1000;
 const CARD_INTERVAL_MS = 1500;
 const FINAL_CARD_RETRIES = 3;
@@ -394,12 +396,15 @@ export class Bridge {
 
     let timedOut = false;
     let idledOut = false;
+    let stalledOut = false;
+    let waitingForTool = false; // true when Claude sent tool_use, waiting for result
     const timeoutId = setTimeout(() => {
       timedOut = true;
       executionHandle.finish();
       abortController.abort();
     }, TASK_TIMEOUT_MS);
     let idleTimerId: ReturnType<typeof setTimeout> | undefined;
+    let stallTimerId: ReturnType<typeof setTimeout> | undefined;
     const resetIdleTimer = () => {
       if (idleTimerId) clearTimeout(idleTimerId);
       idleTimerId = setTimeout(() => {
@@ -408,7 +413,17 @@ export class Bridge {
         abortController.abort();
       }, IDLE_TIMEOUT_MS);
     };
+    const resetStallTimer = () => {
+      if (stallTimerId) clearTimeout(stallTimerId);
+      const timeout = waitingForTool ? STALL_TOOL_TIMEOUT_MS : STALL_API_TIMEOUT_MS;
+      stallTimerId = setTimeout(() => {
+        stalledOut = true;
+        executionHandle.finish();
+        abortController.abort();
+      }, timeout);
+    };
     resetIdleTimer();
+    resetStallTimer();
 
     let lastState: CardState = {
       status: 'thinking',
@@ -443,6 +458,16 @@ export class Bridge {
       for await (const sdkMsg of executionHandle.stream) {
         if (abortController.signal.aborted) break;
         resetIdleTimer();
+
+        // Track whether Claude is waiting for tool execution vs API response
+        if (sdkMsg.type === 'assistant') {
+          const hasToolUse = sdkMsg.message?.content?.some((b) => b.type === 'tool_use');
+          if (hasToolUse) waitingForTool = true;
+        } else if (sdkMsg.type === 'stream_event') {
+          // Any stream event means API is responding (tokens flowing)
+          waitingForTool = false;
+        }
+        resetStallTimer();
         const state = processor.processMessage(sdkMsg);
         lastState = state;
 
@@ -516,6 +541,7 @@ export class Bridge {
       }
 
       await flushPending(lastState);
+      if (stallTimerId) clearTimeout(stallTimerId);
       if (lastState.status !== 'complete' && lastState.status !== 'error') {
         lastState = {
           ...lastState,
@@ -523,18 +549,22 @@ export class Bridge {
             ? 'error'
             : idledOut
               ? 'error'
-              : abortController.signal.aborted
+              : stalledOut
                 ? 'error'
-                : lastState.responseText
-                  ? 'complete'
-                  : 'error',
+                : abortController.signal.aborted
+                  ? 'error'
+                  : lastState.responseText
+                    ? 'complete'
+                    : 'error',
           errorMessage: timedOut
             ? 'Timed out (24h)'
             : idledOut
               ? 'Idle timeout (1h)'
-              : abortController.signal.aborted
-                ? 'Stopped'
-                : undefined,
+              : stalledOut
+                ? 'Stalled (no response for 3min). Reply to continue.'
+                : abortController.signal.aborted
+                  ? 'Stopped'
+                  : undefined,
         };
       }
 
@@ -608,6 +638,7 @@ export class Bridge {
     } finally {
       clearTimeout(timeoutId);
       if (idleTimerId) clearTimeout(idleTimerId);
+      if (stallTimerId) clearTimeout(stallTimerId);
       if (task.questionTimeoutId) clearTimeout(task.questionTimeoutId);
       try {
         executionHandle.finish();

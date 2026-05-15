@@ -31,6 +31,7 @@ Fleet 是一个飞书机器人，让你在手机上像用终端一样操作 Clau
 
 ### 智能特性
 - 🟢 自动检测 VSCode/终端中正在运行的会话
+- 假死检测：30 秒无 API 响应 或 3 分钟无 tool 输出 → 自动停止，session 保留，回复即可继续
 - 自动重试：session 过期或上下文溢出时自动刷新
 - 交互式问答：Claude 提问时弹出选项按钮
 - 状态持久化：重启不丢失 thread↔session 映射
@@ -114,7 +115,7 @@ pm2 startup  # 开机自启
 ## 技术架构
 
 ```
-~2500 行 TypeScript · 14 个源文件 · 飞书 Card JSON 2.0
+~3400 行 TypeScript · 18 个源文件 · 飞书 Card JSON 2.0
 持久化：~/.fleet/state.json
 进程管理：PM2
 ```

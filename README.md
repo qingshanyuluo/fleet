@@ -23,6 +23,7 @@ Feishu DM (your phone/PC)
 - **Fork & Resume** — Native Claude fork (shared history) or resume existing sessions
 - **AskUserQuestion** — Interactive question cards with option buttons
 - **File & Image support** — Send images/files from Feishu, Claude analyzes them
+- **Stall detection** — 30s no API response or 3min no tool output → auto-stop, session preserved, reply to continue
 - **Auto-retry** — Stale session and context overflow auto-retry with fresh session
 - **Persistent state** — Thread↔session mappings survive restarts (`~/.fleet/state.json`)
 - **PM2 managed** — Auto-restart on crash, graceful shutdown, log rotation
@@ -117,7 +118,7 @@ Fleet checks `~/.claude/sessions/` for running Claude processes. Running session
 ## Architecture
 
 ```
-~2500 lines of TypeScript. 14 source files.
+~3400 lines of TypeScript. 18 source files.
 Persistent state: ~/.fleet/state.json
 ```
 
