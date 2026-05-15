@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import type * as lark from '@larksuiteoapi/node-sdk';
-import type { Logger } from './logger.js';
+import type { Logger } from '../logger.js';
 
 export class Sender {
   constructor(
@@ -41,7 +41,8 @@ export class Sender {
           msg_type: 'interactive',
         },
       });
-      const messageId = (resp as any)?.data?.message_id;
+      const data = resp as { data?: { message_id?: string } };
+      const messageId = data?.data?.message_id;
       if (!messageId) {
         this.logger.error({ resp: JSON.stringify(resp) }, 'replyCard: no message_id in response');
       }
@@ -72,7 +73,9 @@ export class Sender {
         params: { type: 'image' },
       });
       if (resp) {
-        await (resp as any).writeFile(savePath);
+        await (resp as Record<string, unknown>).writeFile as (path: string) => Promise<void>;
+        const r = resp as { writeFile(p: string): Promise<void> };
+        await r.writeFile(savePath);
         this.logger.info({ imageKey, savePath }, 'Image downloaded');
         return true;
       }
@@ -90,7 +93,8 @@ export class Sender {
         params: { type: 'file' },
       });
       if (resp) {
-        await (resp as any).writeFile(savePath);
+        const r = resp as { writeFile(p: string): Promise<void> };
+        await r.writeFile(savePath);
         this.logger.info({ fileKey, savePath }, 'File downloaded');
         return true;
       }
@@ -139,20 +143,26 @@ export class Sender {
           image: fs.createReadStream(filePath),
         },
       });
-      const imageKey = (resp as any)?.image_key;
+      const data = resp as Record<string, unknown>;
+      const imageKey = data?.image_key as string | undefined;
       if (!imageKey) return false;
 
-      const data: any = {
+      const sendData: {
+        receive_id: string;
+        content: string;
+        msg_type: string;
+        root_id?: string;
+      } = {
         receive_id: chatId,
         content: JSON.stringify({ image_key: imageKey }),
         msg_type: 'image',
       };
       if (rootId) {
-        data.root_id = rootId;
+        sendData.root_id = rootId;
       }
       await this.client.im.v1.message.create({
         params: { receive_id_type: 'chat_id' },
-        data,
+        data: sendData,
       });
       return true;
     } catch (err) {

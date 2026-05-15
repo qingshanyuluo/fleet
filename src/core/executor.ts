@@ -5,8 +5,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKUserMessage, SpawnOptions, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
-import type { Logger } from './logger.js';
-import type { AppConfig } from './config.js';
+import type { Logger } from '../logger.js';
+import type { AppConfig } from '../config.js';
+import { AsyncQueue } from './async-queue.js';
 
 const isWindows = process.platform === 'win32';
 
@@ -37,15 +38,14 @@ function createSpawnFn(explicitApiKey?: string): (options: SpawnOptions) => Spaw
   const authVars = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'];
 
   return (options: SpawnOptions): SpawnedProcess => {
-    const baseEnv = options.env && Object.keys(options.env).length > 0
-      ? { ...process.env, ...options.env }
-      : { ...process.env };
+    const baseEnv =
+      options.env && Object.keys(options.env).length > 0 ? { ...process.env, ...options.env } : { ...process.env };
 
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(baseEnv)) {
       if (value === undefined) continue;
-      if (alwaysFilter.some(p => key.startsWith(p))) continue;
-      if (filterAuthVars && authVars.some(v => key.startsWith(v))) continue;
+      if (alwaysFilter.some((p) => key.startsWith(p))) continue;
+      if (filterAuthVars && authVars.some((v) => key.startsWith(v))) continue;
       env[key] = value;
     }
     if (explicitApiKey) {
@@ -60,49 +60,6 @@ function createSpawnFn(explicitApiKey?: string): (options: SpawnOptions) => Spaw
     });
     return child as unknown as SpawnedProcess;
   };
-}
-
-// --- Async Queue (for multi-turn input) ---
-
-class AsyncQueue<T> {
-  private items: T[] = [];
-  private resolvers: Array<(value: IteratorResult<T>) => void> = [];
-  private finished = false;
-
-  enqueue(item: T): void {
-    if (this.finished) return;
-    const resolver = this.resolvers.shift();
-    if (resolver) {
-      resolver({ value: item, done: false });
-    } else {
-      this.items.push(item);
-    }
-  }
-
-  finish(): void {
-    this.finished = true;
-    for (const resolve of this.resolvers) {
-      resolve({ value: undefined as any, done: true });
-    }
-    this.resolvers = [];
-  }
-
-  async next(): Promise<IteratorResult<T>> {
-    if (this.items.length > 0) {
-      const value = this.items.shift()!;
-      return { value, done: false };
-    }
-    if (this.finished) {
-      return { value: undefined as any, done: true };
-    }
-    return new Promise<IteratorResult<T>>((resolve) => {
-      this.resolvers.push(resolve);
-    });
-  }
-
-  [Symbol.asyncIterator](): AsyncQueue<T> {
-    return this;
-  }
 }
 
 // --- Types ---
@@ -189,7 +146,12 @@ export class Executor {
       includePartialMessages: true,
       settingSources: ['user', 'project'],
       spawnClaudeCodeProcess: createSpawnFn(process.env.ANTHROPIC_API_KEY),
-      executableArgs: [path.join(path.dirname(fileURLToPath(import.meta.resolve('@anthropic-ai/claude-agent-sdk'))), 'cli.js')],
+      executableArgs: [
+        path.join(
+          path.dirname(fileURLToPath(import.meta.resolve('@anthropic-ai/claude-agent-sdk'))),
+          'cli.js',
+        ),
+      ],
       pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
       betas: ['context-1m-2025-08-07'],
     };
@@ -249,15 +211,17 @@ export class Executor {
     };
 
     queryOptions.hooks = {
-      PreToolUse: [{
-        matcher: 'AskUserQuestion',
-        hooks: [askUserQuestionHook as any],
-      }],
+      PreToolUse: [
+        {
+          matcher: 'AskUserQuestion',
+          hooks: [askUserQuestionHook],
+        },
+      ],
     };
 
     const stream = query({
       prompt: inputQueue,
-      options: queryOptions as any,
+      options: queryOptions,
     });
 
     const logger = this.logger;
@@ -268,9 +232,13 @@ export class Executor {
           reject(new DOMException('Aborted', 'AbortError'));
           return;
         }
-        abortController.signal.addEventListener('abort', () => {
-          reject(new DOMException('Aborted', 'AbortError'));
-        }, { once: true });
+        abortController.signal.addEventListener(
+          'abort',
+          () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+          },
+          { once: true },
+        );
       });
 
       const iterator = stream[Symbol.asyncIterator]();
@@ -281,10 +249,18 @@ export class Executor {
           if (result.done) break;
           yield result.value as SDKMessage;
         }
-      } catch (err: any) {
-        if (err.name === 'AbortError' || abortController.signal.aborted) {
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
           logger.info('Claude execution aborted');
-          try { iterator.return?.(undefined); } catch { /* ignore */ }
+          try {
+            iterator.return?.(undefined);
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+        if (abortController.signal.aborted) {
+          logger.info('Claude execution aborted');
           return;
         }
         throw err;

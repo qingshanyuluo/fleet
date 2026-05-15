@@ -1,5 +1,5 @@
-import type { CardState, ToolCall, PendingQuestion, QuestionItem } from './types.js';
-import type { SDKMessage } from './executor.js';
+import type { CardState, ToolCall, PendingQuestion } from '../types.js';
+import type { SDKMessage } from '../core/executor.js';
 
 const SDK_HANDLED_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
@@ -48,7 +48,7 @@ export class StreamProcessor {
             const blockId = event.content_block?.id;
             if (!blockId) {
               // Find the most recent active tool call without detail
-              for (const [id, tc] of this.activeToolCalls) {
+              for (const [, tc] of this.activeToolCalls) {
                 if (!tc.detail) {
                   tc.detail += delta.text;
                   break;
@@ -92,7 +92,7 @@ export class StreamProcessor {
                 // Track AskUserQuestion for pending question display
                 if (block.name === 'AskUserQuestion' && block.input && typeof block.input === 'object') {
                   const input = block.input as Record<string, unknown>;
-                  const questions = input.questions as QuestionItem[] | undefined;
+                  const questions = input.questions as PendingQuestion['questions'] | undefined;
                   if (questions && questions.length > 0) {
                     this.pendingQuestion = { toolUseId: block.id, questions };
                     this.state.status = 'waiting_for_input';
@@ -112,7 +112,10 @@ export class StreamProcessor {
                 detail,
                 status: 'done',
               });
-              this.state.status = 'running';
+              // Don't override waiting_for_input status set by AskUserQuestion handling
+              if (this.state.status !== 'waiting_for_input') {
+                this.state.status = 'running';
+              }
             }
           }
         }

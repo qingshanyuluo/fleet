@@ -78,15 +78,21 @@ export function scanProjects(): ProjectInfo[] {
           try {
             const stat = fs.statSync(path.join(fullPath, f));
             if (stat.mtimeMs > lastActivity) lastActivity = stat.mtimeMs;
-          } catch { /* skip */ }
+          } catch {
+            /* skip */
+          }
         }
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
 
     try {
       const stat = fs.statSync(fullPath);
       if (stat.mtimeMs > lastActivity) lastActivity = stat.mtimeMs;
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
 
     const name = dir.split('/').pop() || dir;
     projects.push({ dir, name, sessionCount, lastActivity });
@@ -96,16 +102,24 @@ export function scanProjects(): ProjectInfo[] {
   return projects;
 }
 
+/** Raw message from Claude session JSONL */
+interface RawMessage {
+  type?: string;
+  message?: {
+    content?: string | Array<{ type?: string; text?: string; name?: string }>;
+  };
+}
+
 /** Extract the first user message text from a Claude message JSON */
-function extractUserText(msg: Record<string, unknown>): string | null {
+function extractUserText(msg: RawMessage): string | null {
   if (msg.type !== 'user') return null;
-  const content = (msg.message as Record<string, unknown>)?.content;
+  const content = msg.message?.content;
   if (!content) return null;
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     for (const block of content) {
-      if (typeof block === 'object' && block !== null && (block as any).type === 'text') {
-        return (block as any).text || null;
+      if (typeof block === 'object' && block !== null && block.type === 'text') {
+        return block.text || null;
       }
     }
   }
@@ -113,7 +127,10 @@ function extractUserText(msg: Record<string, unknown>): string | null {
 }
 
 /** Read recent session titles from a project's jsonl files */
-export function readProjectSessions(projectDir: string, limit = 10): Array<{ title: string; time: number; sessionId: string }> {
+export function readProjectSessions(
+  projectDir: string,
+  limit = 10,
+): Array<{ title: string; time: number; sessionId: string }> {
   const encoded = encodeProjectName(projectDir);
   const fullPath = path.join(PROJECTS_DIR, encoded);
   if (!fs.existsSync(fullPath)) return [];
@@ -121,8 +138,9 @@ export function readProjectSessions(projectDir: string, limit = 10): Array<{ tit
   const sessions: Array<{ title: string; time: number; sessionId: string }> = [];
 
   try {
-    const files = fs.readdirSync(fullPath)
-      .filter(f => f.endsWith('.jsonl'))
+    const files = fs
+      .readdirSync(fullPath)
+      .filter((f) => f.endsWith('.jsonl'))
       .sort((a, b) => {
         const sa = fs.statSync(path.join(fullPath, a)).mtimeMs;
         const sb = fs.statSync(path.join(fullPath, b)).mtimeMs;
@@ -140,10 +158,15 @@ export function readProjectSessions(projectDir: string, limit = 10): Array<{ tit
         let title = '';
         for (let i = 0; i < Math.min(lines.length, 10); i++) {
           try {
-            const parsed = JSON.parse(lines[i]);
+            const parsed = JSON.parse(lines[i]) as RawMessage;
             const text = extractUserText(parsed);
-            if (text) { title = text; break; }
-          } catch { continue; }
+            if (text) {
+              title = text;
+              break;
+            }
+          } catch {
+            continue;
+          }
         }
         sessions.push({
           title: title?.slice(0, 100) || '(no user prompt)',
@@ -154,9 +177,17 @@ export function readProjectSessions(projectDir: string, limit = 10): Array<{ tit
         sessions.push({ title: '(unreadable)', time: 0, sessionId });
       }
     }
-  } catch { /* skip */ }
+  } catch {
+    /* skip */
+  }
 
   return sessions;
+}
+
+/** Session file data shape */
+interface SessionData {
+  pid?: number;
+  sessionId?: string;
 }
 
 /** Get set of claude session IDs that are currently running */
@@ -171,15 +202,94 @@ export function getActiveClaudeSessions(): Set<string> {
       if (!f.endsWith('.json')) continue;
       try {
         const raw = fs.readFileSync(path.join(sessionsDir, f), 'utf-8');
-        const data = JSON.parse(raw);
-        // Check if the PID is still alive
+        const data = JSON.parse(raw) as SessionData;
+        // Check if the PID is still alive (Unix-only; skip on Windows)
         const pid = data.pid;
-        if (pid) {
-          try { process.kill(pid, 0); } catch { continue; } // PID not alive
+        if (pid && process.platform !== 'win32') {
+          try {
+            process.kill(pid, 0);
+          } catch {
+            continue; // PID not alive
+          }
         }
         if (data.sessionId) active.add(data.sessionId);
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
-  } catch { /* skip */ }
+  } catch {
+    /* skip */
+  }
   return active;
+}
+
+/** A single message summary from tailSession */
+export interface SessionMessage {
+  role: string;
+  summary: string;
+}
+
+/** Read the last N messages from a session JSONL file */
+export function tailSession(
+  projectDir: string,
+  sessionId: string,
+  count: number = 8,
+): SessionMessage[] {
+  const encoded = encodeProjectName(projectDir);
+  const jsonlPath = path.join(PROJECTS_DIR, encoded, `${sessionId}.jsonl`);
+  if (!fs.existsSync(jsonlPath)) return [];
+
+  let content: string;
+  try {
+    content = fs.readFileSync(jsonlPath, 'utf-8');
+  } catch {
+    return [];
+  }
+
+  const lines = content.trim().split('\n');
+  // Scan from the end, collect up to 'count' displayable messages
+  const messages: SessionMessage[] = [];
+  for (let i = lines.length - 1; i >= 0 && messages.length < count; i--) {
+    try {
+      const msg = JSON.parse(lines[i]) as RawMessage & { type?: string; is_error?: boolean; errors?: string[]; total_cost_usd?: number; duration_ms?: number };
+      if (msg.type === 'queue-operation') continue;
+
+      let role = '';
+      let summary = '';
+
+      if (msg.type === 'user') {
+        const text = extractUserText(msg);
+        if (!text) continue;
+        role = 'user';
+        summary = text;
+      } else if (msg.type === 'assistant') {
+        const content = msg.message?.content;
+        if (Array.isArray(content)) {
+          const parts: string[] = [];
+          for (const block of content) {
+            if (typeof block === 'object' && block !== null) {
+              if (block.type === 'text' && block.text) parts.push(block.text);
+              else if (block.type === 'tool_use' && block.name) parts.push(`[${block.name}]`);
+            }
+          }
+          summary = parts.join(' ');
+        }
+        if (!summary) continue;
+        role = 'assistant';
+      } else if (msg.type === 'result') {
+        role = 'result';
+        summary = msg.is_error
+          ? `Error: ${msg.errors?.[0] || 'unknown'}`
+          : `Done · $${(msg.total_cost_usd || 0).toFixed(3)} · ${((msg.duration_ms || 0) / 1000).toFixed(0)}s`;
+      } else {
+        continue;
+      }
+
+      messages.unshift({ role, summary: summary.slice(0, 300) });
+    } catch {
+      continue;
+    }
+  }
+
+  return messages;
 }

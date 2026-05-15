@@ -16,6 +16,7 @@ export interface AppConfig {
   claude: ClaudeConfig;
   folders: Record<string, string>;
   log: { level: string };
+  healthPort: number;
 }
 
 function expandPath(p: string): string {
@@ -28,29 +29,62 @@ const CONFIG_PATH = path.resolve(process.env.FLEET_CONFIG || 'config.json');
 
 let cached: AppConfig | undefined;
 
+/** Safely parse a JSON value to a number or return null */
+function parseOptionalInt(val: unknown): number | null {
+  if (typeof val === 'number') return val;
+  if (typeof val === 'string') {
+    const n = parseInt(val, 10);
+    return isNaN(n) ? null : n;
+  }
+  return null;
+}
+
+function parseOptionalFloat(val: unknown): number | null {
+  if (typeof val === 'number') return val;
+  if (typeof val === 'string') {
+    const n = parseFloat(val);
+    return isNaN(n) ? null : n;
+  }
+  return null;
+}
+
 export function loadConfig(): AppConfig {
   if (cached) return cached;
 
-  const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
-  const parsed = JSON.parse(raw);
+  let parsed: Record<string, unknown> = {};
+  if (fs.existsSync(CONFIG_PATH)) {
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
+    parsed = JSON.parse(raw);
+  }
+
+  const claudeRaw = (parsed.claude as Record<string, unknown>) || {};
+  const logRaw = (parsed.log as Record<string, unknown>) || {};
 
   cached = {
-    feishuAppId: parsed.feishuAppId || process.env.FEISHU_APP_ID || '',
-    feishuAppSecret: parsed.feishuAppSecret || process.env.FEISHU_APP_SECRET || '',
-    defaultWorkingDirectory: expandPath(parsed.defaultWorkingDirectory || '/Users/ll'),
+    feishuAppId: (parsed.feishuAppId as string) || process.env.FEISHU_APP_ID || '',
+    feishuAppSecret: (parsed.feishuAppSecret as string) || process.env.FEISHU_APP_SECRET || '',
+    defaultWorkingDirectory: expandPath((parsed.defaultWorkingDirectory as string) || os.homedir()),
     claude: {
-      maxTurns: parsed.claude?.maxTurns ?? (process.env.CLAUDE_MAX_TURNS ? parseInt(process.env.CLAUDE_MAX_TURNS, 10) : null),
-      maxBudgetUsd: parsed.claude?.maxBudgetUsd ?? (process.env.CLAUDE_MAX_BUDGET_USD ? parseFloat(process.env.CLAUDE_MAX_BUDGET_USD) : null),
-      model: parsed.claude?.model || process.env.CLAUDE_MODEL || 'claude-opus-4-7',
+      maxTurns:
+        parseOptionalInt(claudeRaw.maxTurns) ??
+        parseOptionalInt(process.env.CLAUDE_MAX_TURNS),
+      maxBudgetUsd:
+        parseOptionalFloat(claudeRaw.maxBudgetUsd) ??
+        parseOptionalFloat(process.env.CLAUDE_MAX_BUDGET_USD),
+      model:
+        (claudeRaw.model as string) || process.env.CLAUDE_MODEL || 'claude-opus-4-7',
     },
-    folders: parsed.folders || {},
+    folders: (parsed.folders as Record<string, string>) || {},
     log: {
-      level: parsed.log?.level || process.env.LOG_LEVEL || 'info',
+      level: (logRaw.level as string) || process.env.LOG_LEVEL || 'info',
     },
+    healthPort: parseInt(process.env.HEALTH_PORT || '9100', 10),
   };
 
   if (!cached.feishuAppId || !cached.feishuAppSecret) {
-    throw new Error('Missing feishuAppId/feishuAppSecret in config.json. Set them or use FEISHU_APP_ID/FEISHU_APP_SECRET env vars.');
+    throw new Error(
+      'Missing feishuAppId/feishuAppSecret. Set them in config.json or via FEISHU_APP_ID/FEISHU_APP_SECRET env vars.',
+    );
   }
 
   return cached;

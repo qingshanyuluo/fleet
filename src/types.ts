@@ -21,6 +21,7 @@ export interface QuestionItem {
 export interface PendingQuestion {
   toolUseId: string;
   questions: QuestionItem[];
+  sessionId?: string;
 }
 
 export interface CardState {
