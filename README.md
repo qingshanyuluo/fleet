@@ -1,171 +1,80 @@
 # Fleet
 
-A Feishu bot that turns your phone into a Claude Code remote client. Threads are sessions, folders are projects — same workflow as VSCode, but from anywhere.
+Turn your phone into a Claude Code terminal. Send a message on Feishu, get a full coding session — threads are sessions, tap to resume, watch from anywhere.
 
-## Concept
+## Why Fleet
 
-```
-Feishu DM (your phone/PC)
-  ├── "/dash"         → 🏠 Dashboard with quick-action buttons
-  ├── "/projects"     → 📂 Browse Claude projects, tap to switch
-  ├── "/list"         → 📋 Collapsible session list with previews
-  ├── "/list <query>" → 🔍 Search all sessions by keyword
-  ├── Send message    → New Claude session (reply to card to continue)
-  ├── Reply in thread → Continue that session
-  └── Multiple threads → Multiple concurrent Claude sessions
-```
+You're on the subway and realize you need Claude to fix that bug. Or you're in a meeting and want to check if your refactor finished. Or you just don't want to open your laptop for a quick task.
 
-## Features
+Fleet bridges Feishu and Claude Code. Every thread is an independent session. Start from your phone, continue on desktop, pick up tomorrow — it's all the same conversation.
 
-- **Collapsible session list** — Feishu Card JSON 2.0 native `collapsible_panel`, click to expand previews and action buttons
-- **Session search** — `/list <keyword>` searches across all Claude sessions (summary, title, first prompt)
-- **Watch running sessions** — See real-time output of sessions running in VSCode/terminal
-- **Fork & Resume** — Native Claude fork (shared history) or resume existing sessions
-- **AskUserQuestion** — Interactive question cards with option buttons
-- **File & Image support** — Send images/files from Feishu, Claude analyzes them
-- **Stall detection** — 30s no API response or 3min no tool output → auto-stop, session preserved, reply to continue
-- **Auto-retry** — Stale session and context overflow auto-retry with fresh session
-- **Persistent state** — Thread↔session mappings survive restarts (`~/.fleet/state.json`)
-- **PM2 managed** — Auto-restart on crash, graceful shutdown, log rotation
+## What It Does
 
-## Setup
+**Start a session** — Send any message. Fleet spins up Claude Code in your project directory and streams the response back as an interactive card.
 
-### 1. Prerequisites
+**Continue in thread** — Reply in the thread to keep talking. Same session, full context.
 
-- Node.js 20+
-- Claude Code installed and authenticated: `npm install -g @anthropic-ai/claude-code && claude login`
-- A Feishu app with bot capability
+**Watch running sessions** — Claude running in VSCode? Tap 👀 Watch to see what it's doing right now.
 
-### 2. Create Feishu App
+**Fork anywhere** — See an interesting session? Fork it. You get the full history in a new branch.
 
-1. Go to [Feishu Developer Console](https://open.feishu.cn/app) → Create Custom App
-2. Add **Bot** capability
-3. Go to **Permissions & Scopes** → add:
-   - `im:message` — Read and send messages
-   - `im:message:readonly` — Read messages
-   - `im:resource` — Upload images and files
-4. Go to **Events & Subscriptions**:
-   - Set mode to **"Persistent connection"** (WebSocket)
-   - Subscribe to: `im.message.receive_v1`, `card.action.trigger`
-5. Create a version and publish
+**Search everything** — `/list deploy fix` finds that session from last week where you fixed the deploy script.
 
-### 3. Install & Configure
+**Never lose context** — Session mappings persist to disk. Restart the server, switch devices — your threads still connect to the right sessions.
+
+**Smart stall detection** — If Claude's API hangs (30s) or a tool stalls (3min), Fleet auto-stops and tells you. Reply to pick up where you left off.
+
+**Native tables** — Claude outputs a markdown table? Fleet renders it as a proper Feishu table component, not raw pipe characters.
+
+## Quick Start
 
 ```bash
 git clone https://github.com/qingshanyuluo/fleet.git
 cd fleet
 npm install
 cp config.example.json config.json
-# Edit config.json with your Feishu App ID and App Secret
-```
-
-### 4. Run
-
-```bash
-# Development
-npm run dev
-
-# Production (PM2)
+# Fill in your Feishu App ID and Secret
 pm2 start ecosystem.config.cjs
-pm2 save
 ```
 
-### 5. Connect
+Prerequisites: Node.js 20+, Claude Code installed (`npm i -g @anthropic-ai/claude-code && claude login`), a Feishu app with Bot capability + WebSocket events.
 
-Open Feishu, search for your bot, start a DM.
+## Commands
 
-## Usage
+| Command | Action |
+|---------|--------|
+| `/dash` | Dashboard |
+| `/list` | Browse sessions (collapsible, with previews) |
+| `/list <keyword>` | Search all sessions |
+| `/projects` | Switch project folder |
+| `/stop` | Stop current task (in thread) |
+| `/reset` | Fresh session (in thread) |
 
-### Commands
+## Feishu App Setup
 
-| Command | What it does |
-|---------|-------------|
-| `/dash` | Dashboard with quick-action buttons |
-| `/projects` | Browse all Claude project folders, tap to switch |
-| `/list` | Collapsible session list (5/page, with previews) |
-| `/list <keyword>` | Search all sessions by keyword |
-| `/folder <name>` | Switch to a named project |
-| `/cd <path>` | Set working directory |
-| `/stop` | Stop running task (use in thread) |
-| `/reset` | Fresh conversation (use in thread) |
-| `/help` | Show help |
+1. [Developer Console](https://open.feishu.cn/app) → Create Custom App → Add Bot
+2. Permissions: `im:message`, `im:message:readonly`, `im:resource`
+3. Events: mode = **Persistent connection**, subscribe `im.message.receive_v1` + `card.action.trigger`
+4. Publish
 
-### Conversations
-
-- **Start new**: Send any message → bot replies with a streaming card
-- **Continue**: Reply in the thread → bot continues the session
-- **Multiple**: Start multiple threads — each is an independent Claude session
-
-### Session List (`/list`)
-
-Each session is a collapsible panel. Click to expand and see:
-- Last 4 messages preview (user prompts + Claude responses)
-- Action buttons: Resume, Fork, Watch, Archive
-
-| Button | What it does |
-|--------|-------------|
-| ▶ Resume | Continue that Claude session in a new thread |
-| ⑂ Fork | Native Claude fork (new session, shared history) |
-| 👀 Watch | View recent output of a running session |
-| ✕ Archive | Remove from list |
-
-Pagination: 5 sessions per page with Prev/Next buttons.
-
-### Active Session Detection
-
-Fleet checks `~/.claude/sessions/` for running Claude processes. Running sessions show 🟢 and offer Watch + Fork instead of Resume.
-
-## Architecture
-
-```
-~3400 lines of TypeScript. 18 source files.
-Persistent state: ~/.fleet/state.json
-```
-
-| Directory | Responsibility |
-|-----------|---------------|
-| `src/bridge/` | Core orchestrator, command handler, session manager |
-| `src/core/` | Claude SDK executor, stream processor, project scanner |
-| `src/feishu/` | Card builder, event handler, Feishu API sender |
-| `src/index.ts` | Entry point: WebSocket client, health check, graceful shutdown |
-| `src/config.ts` | Configuration loader |
-| `src/types.ts` | Shared type definitions |
-| `src/logger.ts` | Pino logger |
-
-## Config Reference
+## Config
 
 ```json
 {
   "feishuAppId": "cli_xxx",
   "feishuAppSecret": "...",
-  "defaultWorkingDirectory": "/Users/you",
-  "claude": {
-    "maxTurns": null,
-    "maxBudgetUsd": null,
-    "model": "claude-opus-4-7"
-  },
+  "defaultWorkingDirectory": "~/Code",
+  "claude": { "model": "claude-opus-4-7" },
   "folders": {
-    "myproject": "/Users/you/Code/myproject",
-    "fleet": "/Users/you/Code/fleet"
+    "myapp": "/Users/you/Code/myapp",
+    "infra": "/Users/you/Code/infra"
   }
 }
 ```
 
-## Deployment
+## How It Works
 
-### PM2 (Recommended)
-
-```bash
-pm2 start ecosystem.config.cjs
-pm2 save
-pm2 startup  # auto-start on boot
-```
-
-### Docker
-
-```bash
-docker compose up -d
-```
+Fleet spawns Claude Code as a subprocess via the Agent SDK, streams output token-by-token into Feishu interactive cards, and maps threads to sessions. State lives in `~/.fleet/state.json`. No database.
 
 ## License
 

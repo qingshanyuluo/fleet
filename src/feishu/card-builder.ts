@@ -79,36 +79,119 @@ function questionBlock(q: PendingQuestion): CardComponent[] {
   ];
 }
 
+/** Parse markdown table into JSON 2.0 table component */
+function parseMarkdownTable(text: string): { before: string; table: Record<string, unknown>; after: string } | null {
+  const lines = text.split('\n');
+  let tableStart = -1;
+  let tableEnd = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.startsWith('|') && line.endsWith('|') && line.includes('|')) {
+      if (tableStart === -1) tableStart = i;
+      tableEnd = i;
+    } else if (tableStart !== -1) {
+      break;
+    }
+  }
+
+  if (tableStart === -1 || tableEnd - tableStart < 2) return null;
+
+  const tableLines = lines.slice(tableStart, tableEnd + 1);
+  const headerLine = tableLines[0];
+  const separatorLine = tableLines[1];
+
+  // Validate separator (must be |---|---|)
+  if (!separatorLine.replace(/[\s|:-]/g, '').length === false && !/\|[\s:-]+\|/.test(separatorLine)) return null;
+
+  const parseRow = (line: string) =>
+    line.split('|').slice(1, -1).map((cell) => cell.trim());
+
+  const headers = parseRow(headerLine);
+  if (headers.length < 2) return null;
+
+  const columns = headers.map((h, i) => ({
+    name: `col_${i}`,
+    display_name: h,
+    data_type: 'text' as const,
+    width: 'auto' as const,
+  }));
+
+  const rows = tableLines.slice(2).map((line) => {
+    const cells = parseRow(line);
+    const row: Record<string, string> = {};
+    headers.forEach((_, i) => {
+      row[`col_${i}`] = cells[i] || '';
+    });
+    return row;
+  });
+
+  if (rows.length === 0) return null;
+
+  return {
+    before: lines.slice(0, tableStart).join('\n').trim(),
+    table: {
+      tag: 'table',
+      columns,
+      rows,
+      row_height: 'low',
+      header_style: { bold: true },
+    },
+    after: lines.slice(tableEnd + 1).join('\n').trim(),
+  };
+}
+
 export function buildCard(state: CardState): string {
-  const elements: CardComponent[] = [];
+  const elements: Record<string, unknown>[] = [];
 
   if (state.userPrompt) {
-    elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**You:** ${state.userPrompt.slice(0, 500)}` } });
+    elements.push({ tag: 'markdown', content: `**You:** ${state.userPrompt.slice(0, 500)}` });
     elements.push({ tag: 'hr' });
   }
 
   if (state.toolCalls.length > 0) {
     elements.push({
-      tag: 'div',
-      text: { tag: 'lark_md', content: `**Tools:**\n${state.toolCalls.map(toolCallLine).join('\n')}` },
+      tag: 'markdown',
+      content: `**Tools:**\n${state.toolCalls.map(toolCallLine).join('\n')}`,
     });
     elements.push({ tag: 'hr' });
   }
 
   if (state.responseText) {
-    elements.push({ tag: 'div', text: { tag: 'lark_md', content: truncate(state.responseText) } });
+    const text = truncate(state.responseText);
+    const parsed = parseMarkdownTable(text);
+    if (parsed) {
+      if (parsed.before) elements.push({ tag: 'markdown', content: parsed.before });
+      elements.push(parsed.table);
+      if (parsed.after) elements.push({ tag: 'markdown', content: parsed.after });
+    } else {
+      elements.push({ tag: 'markdown', content: text });
+    }
   } else if (state.status === 'thinking') {
-    elements.push({ tag: 'div', text: { tag: 'lark_md', content: '_Thinking..._' } });
+    elements.push({ tag: 'markdown', content: '_Thinking..._' });
   }
 
   if (state.pendingQuestion && state.status === 'waiting_for_input') {
     elements.push({ tag: 'hr' });
-    elements.push(...questionBlock(state.pendingQuestion));
+    const q = state.pendingQuestion;
+    const currentQ = q.questions[0];
+    if (currentQ) {
+      elements.push({ tag: 'markdown', content: `**${currentQ.question || currentQ.header}**` });
+      for (let i = 0; i < currentQ.options.length; i++) {
+        const opt = currentQ.options[i];
+        elements.push({
+          tag: 'button',
+          text: { tag: 'plain_text', content: `${opt.label}` },
+          type: i === 0 ? 'primary' : 'default',
+          behaviors: [{ type: 'callback', value: { action: 'answer_question', toolUseId: q.toolUseId, optionIndex: i, sessionId: q.sessionId || '' } }],
+        });
+      }
+    }
   }
 
   if (state.errorMessage) {
     elements.push({ tag: 'hr' });
-    elements.push({ tag: 'div', text: { tag: 'lark_md', content: `❌ **Error:** ${state.errorMessage}` } });
+    elements.push({ tag: 'markdown', content: `❌ **Error:** ${state.errorMessage}` });
   }
 
   const statsParts: string[] = [];
@@ -124,11 +207,12 @@ export function buildCard(state: CardState): string {
     statsParts.push(`${Math.round((state.totalTokens / state.contextWindow) * 100)}% ctx`);
   if (statsParts.length > 0) {
     elements.push({ tag: 'hr' });
-    elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: statsParts.join(' · ') }] });
+    elements.push({ tag: 'markdown', content: `_${statsParts.join(' · ')}_` });
   }
 
   return JSON.stringify({
-    config: { update_multi: true, wide_screen_mode: true },
+    schema: '2.0',
+    config: { update_multi: true },
     header: {
       title: {
         tag: 'plain_text',
@@ -147,7 +231,7 @@ export function buildCard(state: CardState): string {
       },
       template: colorForStatus(state.status),
     },
-    elements,
+    body: { elements },
   });
 }
 
